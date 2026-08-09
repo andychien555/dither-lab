@@ -1,0 +1,1194 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dither Lab</title>
+<meta name="description" content="A browser-side calibration bench for ordered dithering. Load an image, tune the grain, compare versions. Nothing is uploaded.">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 8'%3E%3Crect width='8' height='8' fill='%23F0EFEC'/%3E%3Cg fill='%2314140F'%3E%3Crect x='0' y='0' width='1' height='1'/%3E%3Crect x='2' y='0' width='1' height='1'/%3E%3Crect x='4' y='0' width='1' height='1'/%3E%3Crect x='6' y='0' width='1' height='1'/%3E%3Crect x='1' y='1' width='1' height='1'/%3E%3Crect x='5' y='1' width='1' height='1'/%3E%3Crect x='0' y='2' width='1' height='1'/%3E%3Crect x='3' y='2' width='1' height='1'/%3E%3Crect x='4' y='2' width='1' height='1'/%3E%3Crect x='7' y='2' width='1' height='1'/%3E%3Crect x='2' y='3' width='1' height='1'/%3E%3Crect x='6' y='3' width='1' height='1'/%3E%3Crect x='0' y='4' width='1' height='1'/%3E%3Crect x='3' y='4' width='1' height='1'/%3E%3Crect x='5' y='5' width='1' height='1'/%3E%3Crect x='1' y='6' width='1' height='1'/%3E%3Crect x='4' y='6' width='1' height='1'/%3E%3Crect x='6' y='7' width='1' height='1'/%3E%3C/g%3E%3C/svg%3E">
+<meta property="og:title" content="Dither Lab">
+<meta property="og:description" content="A browser-side calibration bench for ordered dithering. Load an image, tune the grain, compare versions.">
+<meta property="og:type" content="website">
+</head>
+<body>
+
+<style>
+  :root {
+    --ground: #F0EFEC;
+    --surface: #E8E6E1;
+    --sunken: #DFDCD5;
+    --line: #CFCBC2;
+    --line-strong: #A8A399;
+    --ink: #14140F;
+    --ink-soft: #6B6860;
+    --ink-faint: #949086;
+    --accent: #6E2C2C;
+    --accent-ink: #F0EFEC;
+    --slate: #56687E;
+    --ochre: #A8792F;
+    --shadow: none;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #15161A;
+      --surface: #1D1F24;
+      --sunken: #101115;
+      --line: #2C2F36;
+      --line-strong: #464B55;
+      --ink: #ECE9E2;
+      --ink-soft: #94958E;
+      --ink-faint: #6A6C72;
+      --accent: #C97070;
+      --accent-ink: #15161A;
+      --slate: #8CA1BC;
+      --ochre: #D6A44F;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #15161A;
+    --surface: #1D1F24;
+    --sunken: #101115;
+    --line: #2C2F36;
+    --line-strong: #464B55;
+    --ink: #ECE9E2;
+    --ink-soft: #94958E;
+    --ink-faint: #6A6C72;
+    --accent: #C97070;
+    --accent-ink: #15161A;
+    --slate: #8CA1BC;
+    --ochre: #D6A44F;
+  }
+
+  * { box-sizing: border-box; }
+
+  /* A class-level display rule outranks the UA sheet's [hidden] { display: none },
+     so state the override once, here, rather than per component. */
+  [hidden] { display: none !important; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .mono {
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---------- masthead ---------- */
+
+  header {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    padding: 18px 24px;
+    border-bottom: 1px solid var(--line);
+    flex-wrap: wrap;
+  }
+
+  h1 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+
+  .tagline {
+    margin: 0;
+    color: var(--ink-soft);
+    font-size: 13px;
+    max-width: 62ch;
+  }
+
+  .masthead-spacer { flex: 1; }
+
+  /* ---------- shell ---------- */
+
+  .shell {
+    display: grid;
+    grid-template-columns: 300px minmax(0, 1fr);
+    min-height: calc(100vh - 62px);
+  }
+
+  @media (max-width: 860px) {
+    .shell { grid-template-columns: 1fr; }
+    .panel { border-right: none !important; border-bottom: 1px solid var(--line); }
+  }
+
+  .panel {
+    border-right: 1px solid var(--line);
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+    align-content: start;
+  }
+
+  .stage-wrap {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  /* ---------- controls ---------- */
+
+  .group { display: flex; flex-direction: column; gap: 12px; }
+
+  .group-label {
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    font-weight: 700;
+  }
+
+  .control { display: flex; flex-direction: column; gap: 6px; }
+
+  .control-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+  }
+
+  .control-name { font-size: 13px; }
+
+  .control-value {
+    font-size: 12px;
+    color: var(--ink-soft);
+  }
+
+  .control-note {
+    font-size: 11px;
+    color: var(--ink-faint);
+    line-height: 1.4;
+  }
+
+  input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 18px;
+    background: transparent;
+    margin: 0;
+    cursor: ew-resize;
+  }
+
+  input[type="range"]::-webkit-slider-runnable-track {
+    height: 6px;
+    background:
+      repeating-linear-gradient(90deg,
+        var(--line-strong) 0 1px, transparent 1px 4px),
+      var(--sunken);
+    border: 1px solid var(--line);
+  }
+
+  input[type="range"]::-moz-range-track {
+    height: 6px;
+    background:
+      repeating-linear-gradient(90deg,
+        var(--line-strong) 0 1px, transparent 1px 4px),
+      var(--sunken);
+    border: 1px solid var(--line);
+  }
+
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px;
+    height: 18px;
+    background: var(--ink);
+    border: none;
+    margin-top: -7px;
+  }
+
+  input[type="range"]::-moz-range-thumb {
+    width: 12px;
+    height: 18px;
+    background: var(--ink);
+    border: none;
+    border-radius: 0;
+  }
+
+  input[type="range"]:focus-visible::-webkit-slider-thumb { background: var(--accent); }
+  input[type="range"]:focus-visible::-moz-range-thumb { background: var(--accent); }
+
+  /* ---------- buttons ---------- */
+
+  button {
+    font: inherit;
+    font-size: 12px;
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--line-strong);
+    padding: 7px 12px;
+    cursor: pointer;
+  }
+
+  button:hover { background: var(--sunken); }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button[disabled] { opacity: 0.4; cursor: default; }
+
+  button.solid {
+    background: var(--ink);
+    color: var(--ground);
+    border-color: var(--ink);
+    font-weight: 700;
+  }
+
+  button.solid:hover { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  .presets { display: flex; gap: 0; }
+
+  .presets button {
+    flex: 1;
+    border-right-width: 0;
+    padding: 7px 4px;
+    font-size: 11px;
+  }
+
+  .presets button:last-child { border-right-width: 1px; }
+  .presets button[aria-pressed="true"] {
+    background: var(--ink);
+    color: var(--ground);
+    border-color: var(--ink);
+  }
+
+  /* ---------- palette swatches ---------- */
+
+  .swatches {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+    border: 1px solid var(--line);
+    padding: 4px;
+    background: var(--sunken);
+    min-height: 30px;
+  }
+
+  .swatches i {
+    width: 20px;
+    height: 20px;
+    display: block;
+  }
+
+  /* ---------- stage ---------- */
+
+  .stage-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--line);
+    flex-wrap: wrap;
+  }
+
+  .modes { display: flex; }
+
+  .modes button {
+    border-right-width: 0;
+    padding: 5px 11px;
+  }
+
+  .modes button:last-child { border-right-width: 1px; }
+
+  .modes button[aria-pressed="true"] {
+    background: var(--ink);
+    color: var(--ground);
+    border-color: var(--ink);
+  }
+
+  .stage-spacer { flex: 1; }
+
+  .readout {
+    font-size: 11px;
+    color: var(--ink-soft);
+  }
+
+  .stage {
+    flex: 1;
+    display: grid;
+    place-items: center;
+    padding: 28px;
+    background:
+      repeating-linear-gradient(0deg, var(--line) 0 1px, transparent 1px 8px),
+      repeating-linear-gradient(90deg, var(--line) 0 1px, transparent 1px 8px),
+      var(--sunken);
+    background-blend-mode: normal;
+    min-height: 340px;
+    overflow: auto;
+  }
+
+  .frame {
+    position: relative;
+    line-height: 0;
+    border: 1px solid var(--line-strong);
+    max-width: 100%;
+  }
+
+  .frame canvas {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    image-rendering: pixelated;
+  }
+
+  #origCanvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+  }
+
+  .split-handle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 13px;
+    margin-left: -6px;
+    cursor: ew-resize;
+    display: grid;
+    place-items: center;
+    touch-action: none;
+  }
+
+  .split-handle::before {
+    content: "";
+    width: 1px;
+    height: 100%;
+    background: var(--ink);
+    box-shadow: 0 0 0 1px var(--ground);
+  }
+
+  .split-handle span {
+    position: absolute;
+    top: 8px;
+    width: 13px;
+    height: 26px;
+    background: var(--ink);
+  }
+
+  /* ---------- dropzone ---------- */
+
+  .dropzone {
+    border: 1px dashed var(--line-strong);
+    background: var(--surface);
+    padding: 52px 36px;
+    max-width: 520px;
+    text-align: left;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .dropzone.hot { border-color: var(--accent); background: var(--sunken); }
+  .dropzone h2 { margin: 0; font-size: 17px; letter-spacing: -0.01em; }
+  .dropzone p { margin: 0; color: var(--ink-soft); font-size: 13px; }
+  .dropzone ul { margin: 0; padding-left: 18px; color: var(--ink-soft); font-size: 12px; }
+  .dropzone li { margin-bottom: 3px; }
+  .dropzone .btn-row { margin-top: 4px; }
+
+  /* ---------- pins ---------- */
+
+  .pins {
+    border-top: 1px solid var(--line);
+    padding: 12px 20px;
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    overflow-x: auto;
+    min-height: 96px;
+  }
+
+  .pins-empty {
+    color: var(--ink-faint);
+    font-size: 12px;
+    align-self: center;
+  }
+
+  .pin {
+    flex: 0 0 auto;
+    width: 108px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .pin button.thumb {
+    padding: 0;
+    border: 1px solid var(--line-strong);
+    line-height: 0;
+    background: var(--sunken);
+    width: 108px;
+    height: 68px;
+    overflow: hidden;
+  }
+
+  .pin button.thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    image-rendering: pixelated;
+  }
+
+  .pin[data-active="true"] button.thumb { border-color: var(--accent); border-width: 2px; }
+
+  .pin-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    color: var(--ink-soft);
+  }
+
+  .pin-meta button {
+    padding: 0 4px;
+    border: none;
+    background: none;
+    color: var(--ink-faint);
+    font-size: 13px;
+    line-height: 1;
+  }
+
+  .pin-meta button:hover { color: var(--accent); background: none; }
+
+  .visually-hidden {
+    position: absolute;
+    width: 1px; height: 1px;
+    padding: 0; margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+
+<header>
+  <h1>Dither Lab</h1>
+  <p class="tagline">
+    Calibration bench for the ordered-dither treatment. Load a generated painting,
+    find the grain you want, then tune the prompt to match it.
+  </p>
+  <span class="masthead-spacer"></span>
+  <div class="btn-row">
+    <button id="newImage" disabled>Load another</button>
+  </div>
+</header>
+
+<div class="shell">
+  <div class="panel">
+    <div class="group">
+      <div class="group-label">Density preset</div>
+      <div class="presets" id="presets">
+        <button type="button" data-preset="light" aria-pressed="false">Light</button>
+        <button type="button" data-preset="house" aria-pressed="true">House</button>
+        <button type="button" data-preset="poster" aria-pressed="false">Poster</button>
+      </div>
+      <p class="control-note" id="presetNote">
+        House standard — the verified target. Match your prompt output against this.
+      </p>
+    </div>
+
+    <div class="group">
+      <div class="group-label">Parameters</div>
+
+      <div class="control">
+        <div class="control-head">
+          <label class="control-name" for="colors">Palette size</label>
+          <span class="control-value mono" id="colorsValue">12</span>
+        </div>
+        <input type="range" id="colors" min="2" max="32" step="1" value="12">
+        <p class="control-note">Fewer colours flatten the painting. Below 8 it reads as game art.</p>
+      </div>
+
+      <div class="control">
+        <div class="control-head">
+          <label class="control-name" for="cell">Cell size</label>
+          <span class="control-value mono" id="cellValue">2 px</span>
+        </div>
+        <input type="range" id="cell" min="1" max="8" step="1" value="2">
+        <p class="control-note">Width of one dither square. Higher is chunkier.</p>
+      </div>
+
+      <div class="control">
+        <div class="control-head">
+          <label class="control-name" for="strength">Dither spread</label>
+          <span class="control-value mono" id="strengthValue">1.00</span>
+        </div>
+        <input type="range" id="strength" min="0" max="2" step="0.05" value="1">
+        <p class="control-note">How far each pixel is pushed before snapping to the palette.</p>
+      </div>
+
+      <div class="control">
+        <div class="control-head">
+          <label class="control-name" for="streaks">Vertical streaks</label>
+          <span class="control-value mono" id="streaksValue">0.0%</span>
+        </div>
+        <input type="range" id="streaks" min="0" max="8" step="0.5" value="0">
+        <p class="control-note">Pixel-sorting artifacts. Skip on subjects that already read vertically.</p>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="group-label">Derived palette</div>
+      <div class="swatches" id="swatches"></div>
+    </div>
+
+    <div class="group">
+      <div class="group-label">This version</div>
+      <p class="control-note mono" id="recipe">—</p>
+      <div class="btn-row">
+        <button type="button" id="pinBtn" disabled>Pin version</button>
+        <button type="button" id="copyBtn" disabled>Copy settings</button>
+      </div>
+      <div class="btn-row">
+        <button type="button" class="solid" id="downloadBtn" disabled>Download full size</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="stage-wrap">
+    <div class="stage-bar">
+      <div class="modes" id="modes">
+        <button type="button" data-mode="result" aria-pressed="true">Result</button>
+        <button type="button" data-mode="split" aria-pressed="false">Split</button>
+        <button type="button" data-mode="original" aria-pressed="false">Original</button>
+      </div>
+      <span class="stage-spacer"></span>
+      <span class="readout mono" id="readout"></span>
+    </div>
+
+    <div class="stage" id="stage">
+      <div class="dropzone" id="dropzone">
+        <h2>Drop a painting here</h2>
+        <p>
+          Nothing leaves this page — the image is processed locally in your browser
+          and never uploaded.
+        </p>
+        <ul>
+          <li>Generate the painting clean, then find the grain here.</li>
+          <li>Pin the versions worth comparing; the bar below holds them side by side.</li>
+          <li>Once you know the target, set the prompt's density phrase to match.</li>
+        </ul>
+        <div class="btn-row">
+          <button type="button" class="solid" id="pickBtn">Choose an image</button>
+        </div>
+        <input type="file" id="fileInput" accept="image/*" class="visually-hidden">
+      </div>
+
+      <div class="frame" id="frame" hidden>
+        <canvas id="outCanvas"></canvas>
+        <canvas id="origCanvas"></canvas>
+        <div class="split-handle" id="splitHandle" hidden><span></span></div>
+      </div>
+    </div>
+
+    <div class="pins" id="pins">
+      <span class="pins-empty">Pinned versions appear here.</span>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  const BAYER8 = [
+    [0, 32, 8, 40, 2, 34, 10, 42],
+    [48, 16, 56, 24, 50, 18, 58, 26],
+    [12, 44, 4, 36, 14, 46, 6, 38],
+    [60, 28, 52, 20, 62, 30, 54, 22],
+    [3, 35, 11, 43, 1, 33, 9, 41],
+    [51, 19, 59, 27, 49, 17, 57, 25],
+    [15, 47, 7, 39, 13, 45, 5, 37],
+    [63, 31, 55, 23, 61, 29, 53, 21]
+  ];
+
+  const PRESETS = {
+    light: {
+      colors: 20, cell: 1, strength: 0.6, streaks: 0,
+      note: "Light — grain only in the smoothest gradients. Barely present at full size."
+    },
+    house: {
+      colors: 12, cell: 2, strength: 1, streaks: 0,
+      note: "House standard — the verified target. Match your prompt output against this."
+    },
+    poster: {
+      colors: 8, cell: 3, strength: 1.2, streaks: 2,
+      note: "Poster — denser than standard, for print viewed at distance. Check the brushwork survived."
+    }
+  };
+
+  const PREVIEW_MAX = 1100;
+
+  const els = {
+    stage: document.getElementById("stage"),
+    dropzone: document.getElementById("dropzone"),
+    fileInput: document.getElementById("fileInput"),
+    pickBtn: document.getElementById("pickBtn"),
+    newImage: document.getElementById("newImage"),
+    frame: document.getElementById("frame"),
+    out: document.getElementById("outCanvas"),
+    orig: document.getElementById("origCanvas"),
+    splitHandle: document.getElementById("splitHandle"),
+    swatches: document.getElementById("swatches"),
+    recipe: document.getElementById("recipe"),
+    readout: document.getElementById("readout"),
+    pins: document.getElementById("pins"),
+    pinBtn: document.getElementById("pinBtn"),
+    copyBtn: document.getElementById("copyBtn"),
+    downloadBtn: document.getElementById("downloadBtn"),
+    presets: document.getElementById("presets"),
+    presetNote: document.getElementById("presetNote"),
+    modes: document.getElementById("modes")
+  };
+
+  const inputs = {
+    colors: document.getElementById("colors"),
+    cell: document.getElementById("cell"),
+    strength: document.getElementById("strength"),
+    streaks: document.getElementById("streaks")
+  };
+
+  const values = {
+    colors: document.getElementById("colorsValue"),
+    cell: document.getElementById("cellValue"),
+    strength: document.getElementById("strengthValue"),
+    streaks: document.getElementById("streaksValue")
+  };
+
+  let sourceImage = null;      // full-resolution HTMLImageElement
+  let previewSource = null;    // downscaled canvas used for live render
+  let lastPalette = [];
+  let mode = "result";
+  let splitPct = 50;
+  let pins = [];
+  let activePin = null;
+  let frameQueued = false;
+
+  /* ---------- colour quantisation ---------- */
+
+  function boxSpread(box) {
+    let rmin = 255, rmax = 0, gmin = 255, gmax = 0, bmin = 255, bmax = 0;
+    for (let i = 0; i < box.length; i++) {
+      const p = box[i];
+      if (p[0] < rmin) rmin = p[0];
+      if (p[0] > rmax) rmax = p[0];
+      if (p[1] < gmin) gmin = p[1];
+      if (p[1] > gmax) gmax = p[1];
+      if (p[2] < bmin) bmin = p[2];
+      if (p[2] > bmax) bmax = p[2];
+    }
+    const dr = rmax - rmin, dg = gmax - gmin, db = bmax - bmin;
+    const range = Math.max(dr, dg, db);
+    const channel = range === dr ? 0 : (range === dg ? 1 : 2);
+    return { range: range, channel: channel };
+  }
+
+  function medianCut(samples, target) {
+    let boxes = [samples];
+    while (boxes.length < target) {
+      let pick = -1, widest = -1, channel = 0;
+      for (let i = 0; i < boxes.length; i++) {
+        if (boxes[i].length < 2) continue;
+        const s = boxSpread(boxes[i]);
+        if (s.range > widest) { widest = s.range; pick = i; channel = s.channel; }
+      }
+      if (pick < 0 || widest <= 0) break;
+      const box = boxes[pick];
+      box.sort(function (a, b) { return a[channel] - b[channel]; });
+      const mid = box.length >> 1;
+      boxes.splice(pick, 1, box.slice(0, mid), box.slice(mid));
+    }
+    return boxes.map(function (box) {
+      let r = 0, g = 0, b = 0;
+      for (let i = 0; i < box.length; i++) { r += box[i][0]; g += box[i][1]; b += box[i][2]; }
+      const n = box.length || 1;
+      return [Math.round(r / n), Math.round(g / n), Math.round(b / n)];
+    });
+  }
+
+  function buildLut(palette) {
+    const lut = new Uint8Array(32768);
+    for (let r = 0; r < 32; r++) {
+      const R = r * 8 + 4;
+      for (let g = 0; g < 32; g++) {
+        const G = g * 8 + 4;
+        for (let b = 0; b < 32; b++) {
+          const B = b * 8 + 4;
+          let best = 0, bestDist = Infinity;
+          for (let i = 0; i < palette.length; i++) {
+            const p = palette[i];
+            const dr = R - p[0], dg = G - p[1], db = B - p[2];
+            const d = dr * dr + dg * dg + db * db;
+            if (d < bestDist) { bestDist = d; best = i; }
+          }
+          lut[(r << 10) | (g << 5) | b] = best;
+        }
+      }
+    }
+    return lut;
+  }
+
+  function mulberry32(seed) {
+    let a = seed >>> 0;
+    return function () {
+      a = (a + 0x6D2B79F5) >>> 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  /* ---------- the dither itself ---------- */
+
+  function dither(src, params) {
+    const cell = params.cell;
+    const w = Math.max(1, Math.floor(src.width / cell));
+    const h = Math.max(1, Math.floor(src.height / cell));
+
+    const small = document.createElement("canvas");
+    small.width = w;
+    small.height = h;
+    const ctx = small.getContext("2d", { willReadFrequently: true });
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(src, 0, 0, w, h);
+
+    const img = ctx.getImageData(0, 0, w, h);
+    const data = img.data;
+    const total = w * h;
+
+    // Derive the palette from the artwork itself, so the result keeps the
+    // painting's colour identity rather than snapping to an RGB cube.
+    const step = Math.max(1, Math.floor(total / 20000));
+    const samples = [];
+    for (let i = 0; i < total; i += step) {
+      const o = i * 4;
+      samples.push([data[o], data[o + 1], data[o + 2]]);
+    }
+    const palette = medianCut(samples, params.colors);
+    const lut = buildLut(palette);
+
+    const spread = (255 / params.colors) * params.strength;
+    for (let y = 0; y < h; y++) {
+      const row = BAYER8[y & 7];
+      for (let x = 0; x < w; x++) {
+        const t = (row[x & 7] / 63 - 0.5) * spread;
+        const o = (y * w + x) * 4;
+        let r = data[o] + t, g = data[o + 1] + t, b = data[o + 2] + t;
+        r = r < 0 ? 0 : (r > 255 ? 255 : r);
+        g = g < 0 ? 0 : (g > 255 ? 255 : g);
+        b = b < 0 ? 0 : (b > 255 ? 255 : b);
+        const p = palette[lut[((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3)]];
+        data[o] = p[0];
+        data[o + 1] = p[1];
+        data[o + 2] = p[2];
+      }
+    }
+
+    if (params.streaks > 0) {
+      const rng = mulberry32(7);
+      const density = params.streaks / 100;
+      for (let x = 0; x < w; x++) {
+        if (rng() > density) continue;
+        const start = Math.floor(rng() * h * 0.7);
+        const len = Math.floor(h * (0.05 + rng() * 0.4));
+        const s = (start * w + x) * 4;
+        const r = data[s], g = data[s + 1], b = data[s + 2];
+        const end = Math.min(start + len, h);
+        for (let y = start; y < end; y++) {
+          const o = (y * w + x) * 4;
+          data[o] = r; data[o + 1] = g; data[o + 2] = b;
+        }
+      }
+    }
+
+    ctx.putImageData(img, 0, 0);
+    return { canvas: small, palette: palette, width: w, height: h };
+  }
+
+  /* ---------- rendering ---------- */
+
+  function currentParams() {
+    return {
+      colors: parseInt(inputs.colors.value, 10),
+      cell: parseInt(inputs.cell.value, 10),
+      strength: parseFloat(inputs.strength.value),
+      streaks: parseFloat(inputs.streaks.value)
+    };
+  }
+
+  function recipeText(p) {
+    return "palette " + p.colors + " · cell " + p.cell + " · spread " +
+      p.strength.toFixed(2) + " · streaks " + p.streaks.toFixed(1) + "%";
+  }
+
+  function paint(target, result, width, height) {
+    target.width = width;
+    target.height = height;
+    const ctx = target.getContext("2d");
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0, 0, width, height);
+    ctx.drawImage(result.canvas, 0, 0, width, height);
+  }
+
+  function render() {
+    if (!previewSource) return;
+    const params = currentParams();
+    const result = dither(previewSource, params);
+
+    paint(els.out, result, previewSource.width, previewSource.height);
+    lastPalette = result.palette;
+
+    drawSwatches(result.palette);
+    els.recipe.textContent = recipeText(params);
+    els.readout.textContent = sourceImage.naturalWidth + " × " +
+      sourceImage.naturalHeight + "  ·  grid " + result.width + " × " + result.height;
+  }
+
+  function queueRender() {
+    if (frameQueued) return;
+    frameQueued = true;
+    requestAnimationFrame(function () {
+      frameQueued = false;
+      render();
+    });
+  }
+
+  function drawSwatches(palette) {
+    els.swatches.textContent = "";
+    palette.forEach(function (c) {
+      const sw = document.createElement("i");
+      sw.style.background = "rgb(" + c[0] + "," + c[1] + "," + c[2] + ")";
+      sw.title = "rgb(" + c.join(", ") + ")";
+      els.swatches.appendChild(sw);
+    });
+  }
+
+  /* ---------- loading ---------- */
+
+  function loadFile(file) {
+    if (!file || !/^image\//.test(file.type)) return;
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = function () {
+      sourceImage = img;
+
+      const scale = Math.min(1, PREVIEW_MAX / Math.max(img.naturalWidth, img.naturalHeight));
+      const pw = Math.max(1, Math.round(img.naturalWidth * scale));
+      const ph = Math.max(1, Math.round(img.naturalHeight * scale));
+
+      previewSource = document.createElement("canvas");
+      previewSource.width = pw;
+      previewSource.height = ph;
+      const pctx = previewSource.getContext("2d");
+      pctx.imageSmoothingEnabled = true;
+      pctx.imageSmoothingQuality = "high";
+      pctx.drawImage(img, 0, 0, pw, ph);
+
+      els.orig.width = pw;
+      els.orig.height = ph;
+      els.orig.getContext("2d").drawImage(previewSource, 0, 0);
+
+      els.dropzone.hidden = true;
+      els.frame.hidden = false;
+      els.stage.style.placeItems = "center";
+      [els.pinBtn, els.copyBtn, els.downloadBtn, els.newImage].forEach(function (b) {
+        b.disabled = false;
+      });
+
+      applyMode();
+      render();
+      URL.revokeObjectURL(url);
+    };
+    img.src = url;
+  }
+
+  /* ---------- compare modes ---------- */
+
+  function applyMode() {
+    if (mode === "result") {
+      els.orig.style.clipPath = "inset(0 0 0 100%)";
+      els.splitHandle.hidden = true;
+    } else if (mode === "original") {
+      els.orig.style.clipPath = "inset(0 0 0 0)";
+      els.splitHandle.hidden = true;
+    } else {
+      els.orig.style.clipPath = "inset(0 0 0 " + splitPct + "%)";
+      els.splitHandle.hidden = false;
+      els.splitHandle.style.left = splitPct + "%";
+    }
+  }
+
+  els.modes.addEventListener("click", function (e) {
+    const btn = e.target.closest("button[data-mode]");
+    if (!btn) return;
+    mode = btn.dataset.mode;
+    Array.prototype.forEach.call(els.modes.children, function (b) {
+      b.setAttribute("aria-pressed", String(b === btn));
+    });
+    applyMode();
+  });
+
+  (function initSplitDrag() {
+    let dragging = false;
+
+    function move(clientX) {
+      const rect = els.frame.getBoundingClientRect();
+      const pct = ((clientX - rect.left) / rect.width) * 100;
+      splitPct = Math.max(0, Math.min(100, pct));
+      applyMode();
+    }
+
+    els.splitHandle.addEventListener("pointerdown", function (e) {
+      dragging = true;
+      els.splitHandle.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+
+    els.splitHandle.addEventListener("pointermove", function (e) {
+      if (dragging) move(e.clientX);
+    });
+
+    els.splitHandle.addEventListener("pointerup", function (e) {
+      dragging = false;
+      els.splitHandle.releasePointerCapture(e.pointerId);
+    });
+  })();
+
+  /* ---------- presets ---------- */
+
+  function markPreset(name) {
+    Array.prototype.forEach.call(els.presets.children, function (b) {
+      b.setAttribute("aria-pressed", String(b.dataset.preset === name));
+    });
+    els.presetNote.textContent = name ? PRESETS[name].note :
+      "Custom settings. Pin this version if it beats the house standard.";
+  }
+
+  els.presets.addEventListener("click", function (e) {
+    const btn = e.target.closest("button[data-preset]");
+    if (!btn) return;
+    const p = PRESETS[btn.dataset.preset];
+    inputs.colors.value = p.colors;
+    inputs.cell.value = p.cell;
+    inputs.strength.value = p.strength;
+    inputs.streaks.value = p.streaks;
+    syncLabels();
+    markPreset(btn.dataset.preset);
+    activePin = null;
+    refreshPins();
+    queueRender();
+  });
+
+  function matchingPreset(p) {
+    const names = Object.keys(PRESETS);
+    for (let i = 0; i < names.length; i++) {
+      const q = PRESETS[names[i]];
+      if (q.colors === p.colors && q.cell === p.cell &&
+          Math.abs(q.strength - p.strength) < 0.001 &&
+          Math.abs(q.streaks - p.streaks) < 0.001) return names[i];
+    }
+    return null;
+  }
+
+  /* ---------- controls ---------- */
+
+  function syncLabels() {
+    const p = currentParams();
+    values.colors.textContent = String(p.colors);
+    values.cell.textContent = p.cell + " px";
+    values.strength.textContent = p.strength.toFixed(2);
+    values.streaks.textContent = p.streaks.toFixed(1) + "%";
+    els.recipe.textContent = recipeText(p);
+  }
+
+  Object.keys(inputs).forEach(function (key) {
+    inputs[key].addEventListener("input", function () {
+      syncLabels();
+      markPreset(matchingPreset(currentParams()));
+      activePin = null;
+      refreshPins();
+      queueRender();
+    });
+  });
+
+  /* ---------- pins ---------- */
+
+  function refreshPins() {
+    els.pins.textContent = "";
+    if (!pins.length) {
+      const empty = document.createElement("span");
+      empty.className = "pins-empty";
+      empty.textContent = "Pinned versions appear here.";
+      els.pins.appendChild(empty);
+      return;
+    }
+
+    pins.forEach(function (pin, index) {
+      const wrap = document.createElement("div");
+      wrap.className = "pin";
+      wrap.dataset.active = String(activePin === pin.id);
+
+      const thumbBtn = document.createElement("button");
+      thumbBtn.type = "button";
+      thumbBtn.className = "thumb";
+      thumbBtn.title = "Restore " + recipeText(pin.params);
+      const img = document.createElement("img");
+      img.src = pin.thumb;
+      img.alt = "Version " + (index + 1) + ", " + recipeText(pin.params);
+      thumbBtn.appendChild(img);
+      thumbBtn.addEventListener("click", function () {
+        inputs.colors.value = pin.params.colors;
+        inputs.cell.value = pin.params.cell;
+        inputs.strength.value = pin.params.strength;
+        inputs.streaks.value = pin.params.streaks;
+        syncLabels();
+        markPreset(matchingPreset(pin.params));
+        activePin = pin.id;
+        refreshPins();
+        queueRender();
+      });
+
+      const meta = document.createElement("div");
+      meta.className = "pin-meta";
+      const label = document.createElement("span");
+      label.className = "mono";
+      label.textContent = pin.params.colors + "/" + pin.params.cell + "/" +
+        pin.params.strength.toFixed(1);
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.textContent = "×";
+      remove.title = "Remove this version";
+      remove.setAttribute("aria-label", "Remove version " + (index + 1));
+      remove.addEventListener("click", function () {
+        pins = pins.filter(function (p) { return p.id !== pin.id; });
+        refreshPins();
+      });
+
+      meta.appendChild(label);
+      meta.appendChild(remove);
+      wrap.appendChild(thumbBtn);
+      wrap.appendChild(meta);
+      els.pins.appendChild(wrap);
+    });
+  }
+
+  els.pinBtn.addEventListener("click", function () {
+    if (!previewSource) return;
+    // Rendering is queued on a frame, so the canvas can still hold the previous
+    // settings. Force it current before the thumbnail is captured, or the pin
+    // shows one version and is labelled with another.
+    render();
+    const thumb = document.createElement("canvas");
+    thumb.width = 216;
+    thumb.height = Math.max(1, Math.round(216 * els.out.height / els.out.width));
+    const tctx = thumb.getContext("2d");
+    tctx.imageSmoothingEnabled = false;
+    tctx.drawImage(els.out, 0, 0, thumb.width, thumb.height);
+
+    const pin = {
+      id: "pin-" + pins.length + "-" + els.out.width + "-" + inputs.colors.value +
+          inputs.cell.value + inputs.strength.value + inputs.streaks.value,
+      params: currentParams(),
+      thumb: thumb.toDataURL("image/png")
+    };
+    pins.push(pin);
+    activePin = pin.id;
+    refreshPins();
+  });
+
+  els.copyBtn.addEventListener("click", function () {
+    const p = currentParams();
+    const text = recipeText(p);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () {
+        els.copyBtn.textContent = "Copied";
+        setTimeout(function () { els.copyBtn.textContent = "Copy settings"; }, 1200);
+      });
+    }
+  });
+
+  els.downloadBtn.addEventListener("click", function () {
+    if (!sourceImage) return;
+    els.downloadBtn.textContent = "Rendering…";
+    els.downloadBtn.disabled = true;
+
+    setTimeout(function () {
+      const full = document.createElement("canvas");
+      full.width = sourceImage.naturalWidth;
+      full.height = sourceImage.naturalHeight;
+      full.getContext("2d").drawImage(sourceImage, 0, 0);
+
+      const params = currentParams();
+      const result = dither(full, params);
+
+      const outFull = document.createElement("canvas");
+      outFull.width = full.width;
+      outFull.height = full.height;
+      const octx = outFull.getContext("2d");
+      octx.imageSmoothingEnabled = false;
+      octx.drawImage(result.canvas, 0, 0, full.width, full.height);
+
+      outFull.toBlob(function (blob) {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "dither-p" + params.colors + "-c" + params.cell +
+          "-s" + params.strength.toFixed(2) + ".png";
+        a.click();
+        URL.revokeObjectURL(a.href);
+        els.downloadBtn.textContent = "Download full size";
+        els.downloadBtn.disabled = false;
+      }, "image/png");
+    }, 30);
+  });
+
+  /* ---------- file input plumbing ---------- */
+
+  els.pickBtn.addEventListener("click", function () { els.fileInput.click(); });
+  els.newImage.addEventListener("click", function () { els.fileInput.click(); });
+
+  els.fileInput.addEventListener("change", function (e) {
+    if (e.target.files && e.target.files[0]) loadFile(e.target.files[0]);
+    e.target.value = "";
+  });
+
+  ["dragenter", "dragover"].forEach(function (type) {
+    els.stage.addEventListener(type, function (e) {
+      e.preventDefault();
+      els.dropzone.classList.add("hot");
+    });
+  });
+
+  ["dragleave", "drop"].forEach(function (type) {
+    els.stage.addEventListener(type, function (e) {
+      e.preventDefault();
+      els.dropzone.classList.remove("hot");
+    });
+  });
+
+  els.stage.addEventListener("drop", function (e) {
+    if (e.dataTransfer && e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
+  });
+
+  syncLabels();
+  refreshPins();
+})();
+</script>
+
+</body>
+</html>
