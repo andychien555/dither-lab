@@ -314,6 +314,17 @@
     color: var(--ink-soft);
   }
 
+  /* Failures need a surface of their own. The readout is rewritten on every
+     render and resize, and a disabled button loses focus, so neither can carry
+     a message the user is guaranteed to see. */
+  .notice {
+    font-size: 11px;
+    color: var(--accent);
+    font-weight: 700;
+  }
+
+  .notice:empty { display: none; }
+
   .stage {
     flex: 1;
     display: grid;
@@ -526,7 +537,9 @@
           <span class="control-value mono" id="cellValue">2 px</span>
         </div>
         <input type="range" id="cell" min="1" max="8" step="1" value="2">
-        <p class="control-note">Width of one dither square. Higher is chunkier.</p>
+        <p class="control-note">Width of one dither square, measured against the
+          preview. The export keeps the same cell count and scales each cell up
+          whole, so what you judge here is what you get.</p>
       </div>
 
       <div class="control">
@@ -561,7 +574,7 @@
         <button type="button" id="copyBtn" disabled>Copy settings</button>
       </div>
       <div class="btn-row">
-        <button type="button" class="solid" id="downloadBtn" disabled>Download full size</button>
+        <button type="button" class="solid" id="downloadBtn" disabled>Download</button>
       </div>
     </div>
   </div>
@@ -574,6 +587,7 @@
         <button type="button" data-mode="original" aria-pressed="false">Original</button>
       </div>
       <span class="stage-spacer"></span>
+      <span class="notice" id="notice" role="status" aria-live="polite"></span>
       <span class="readout mono" id="readout"></span>
     </div>
 
@@ -626,7 +640,7 @@
   const PRESETS = {
     light: {
       colors: 20, cell: 1, strength: 0.6, streaks: 0,
-      note: "Light — grain only in the smoothest gradients. Barely present at full size."
+      note: "Light — grain only in the smoothest gradients. Barely present unless you look close."
     },
     house: {
       colors: 12, cell: 2, strength: 1, streaks: 0,
@@ -653,6 +667,7 @@
     swatches: document.getElementById("swatches"),
     recipe: document.getElementById("recipe"),
     readout: document.getElementById("readout"),
+    notice: document.getElementById("notice"),
     pins: document.getElementById("pins"),
     pinBtn: document.getElementById("pinBtn"),
     copyBtn: document.getElementById("copyBtn"),
@@ -677,6 +692,7 @@
   };
 
   let sourceImage = null;      // full-resolution HTMLImageElement
+  let sourceStem = "dither";   // cleaned-up basename of the loaded file
   let previewSource = null;    // downscaled canvas used for live render
   let lastPalette = [];
   let lastGrid = null;         // dither grid size of the current render
@@ -685,6 +701,11 @@
   let pins = [];
   let activePin = null;
   let frameQueued = false;
+  let loadToken = 0;           // only the newest in-flight load may commit
+  let exportInFlight = false;  // the Download button is owned by the export
+  let exportToken = 0;         // stale export callbacks must not touch the UI
+  let noticeTimer = null;
+  let lastExportUrl = null;
 
   /* ---------- colour quantisation ---------- */
 
@@ -762,10 +783,13 @@
 
   /* ---------- the dither itself ---------- */
 
-  function dither(src, params) {
-    const cell = params.cell;
-    const w = Math.max(1, Math.floor(src.width / cell));
-    const h = Math.max(1, Math.floor(src.height / cell));
+  // `grid` fixes the dither resolution independently of the source pixels. The
+  // cell slider is judged by eye against the preview, so a full-size render has
+  // to reuse the preview's cell count; deriving it from the source instead makes
+  // the grain finer in proportion to how far the original overshoots PREVIEW_MAX.
+  function dither(src, params, grid) {
+    const w = grid.w;
+    const h = grid.h;
 
     const small = document.createElement("canvas");
     small.width = w;
@@ -844,6 +868,59 @@
       p.strength.toFixed(2) + " · streaks " + p.streaks.toFixed(1) + "%";
   }
 
+  // Strip the extension and anything a filesystem would object to, but keep
+  // non-Latin scripts intact — the name only has to survive being written to
+  // disk, not be ASCII. Split by code point so a surrogate pair is never cut
+  // in half by the length cap.
+  function stemFor(name) {
+    const cleaned = name
+      .replace(/\.[^.]+$/, "")
+      .replace(/[\\/:*?"<>|\u0000-\u001F]/g, "")
+      .replace(/\s+/g, "-");
+    // Trim after the cap, not before: a name cut mid-word can end on a separator,
+    // which would double up with the one in front of the parameters.
+    const capped = Array.from(cleaned).slice(0, 48).join("");
+    return capped.replace(/^[.\-]+|[.\-]+$/g, "") || "dither";
+  }
+
+  // Every parameter that changes the image goes in the name, in the same order
+  // and to the same precision as the recipe line, so a downloaded file can be
+  // read straight back onto the sliders. Dropping one — streaks, say — makes two
+  // different versions of the same source collide on disk.
+  function downloadName(p) {
+    return sourceStem +
+      "-p" + p.colors +
+      "-c" + p.cell +
+      "-s" + p.strength.toFixed(2) +
+      "-k" + p.streaks.toFixed(1) +
+      ".png";
+  }
+
+  // Failures are announced here rather than in the readout: the readout is
+  // rewritten by every render and every resize, so a message parked there
+  // vanishes the moment the user touches a control.
+  function notify(message) {
+    els.notice.textContent = message || "";
+  }
+
+  // The one definition of the dither grid, measured off the preview so that the
+  // preview and the export land on the same cell count. Takes its source
+  // explicitly so it cannot be called into a null global.
+  function gridFor(source, params) {
+    return {
+      w: Math.max(1, Math.floor(source.width / params.cell)),
+      h: Math.max(1, Math.floor(source.height / params.cell))
+    };
+  }
+
+  // The export is the preview blown up by a whole number of pixels per cell.
+  // A fractional ratio would leave cells at mixed widths, which beats against
+  // the regular Bayer pattern; rounding to the nearest integer costs a few
+  // percent of output size and keeps every cell identical.
+  function exportScale(grid) {
+    return Math.max(1, Math.round(sourceImage.naturalWidth / grid.w));
+  }
+
   function paint(target, result, width, height) {
     target.width = width;
     target.height = height;
@@ -856,7 +933,7 @@
   function render() {
     if (!previewSource) return;
     const params = currentParams();
-    const result = dither(previewSource, params);
+    const result = dither(previewSource, params, gridFor(previewSource, params));
 
     paint(els.out, result, previewSource.width, previewSource.height);
     lastPalette = result.palette;
@@ -871,6 +948,14 @@
     if (!sourceImage || !lastGrid) return;
     let text = sourceImage.naturalWidth + " × " + sourceImage.naturalHeight +
       "  ·  grid " + lastGrid.w + " × " + lastGrid.h;
+
+    // The cell slider reads in preview pixels, which is not what the export
+    // gets. State the export's own size and cell width so nobody sizes grain
+    // for print off a number that only describes the screen.
+    const scale = exportScale(lastGrid);
+    text += "  ·  export " + (lastGrid.w * scale) + " × " + (lastGrid.h * scale) +
+      " @ " + scale + " px cells";
+
     // Once the canvas is scaled to fit, one dither pixel is no longer one screen
     // pixel — say so, or the view quietly misleads the density call.
     const shown = els.out.getBoundingClientRect().width;
@@ -933,11 +1018,44 @@
   /* ---------- loading ---------- */
 
   function loadFile(file) {
-    if (!file || !/^image\//.test(file.type)) return;
+    // A drag that carries no File at all — a link dragged from another tab, or
+    // a folder — is the most common way loading fails. Name it, or the stage
+    // just sits there and the tool reads as broken.
+    if (!file) {
+      notify("Drop an image file, not a link or a folder.");
+      return;
+    }
+    if (!/^image\//.test(file.type)) {
+      notify("That file is not an image.");
+      return;
+    }
+
+    // Decodes finish out of order, so a big file dropped first can land after a
+    // small one dropped second and quietly replace it. Only the newest load is
+    // allowed to touch any state.
+    const token = ++loadToken;
     const url = URL.createObjectURL(file);
     const img = new Image();
+
+    img.onerror = function () {
+      URL.revokeObjectURL(url);
+      if (token !== loadToken) return;
+      notify("Could not read that image.");
+    };
+
     img.onload = function () {
+      URL.revokeObjectURL(url);
+      if (token !== loadToken) return;
+
+      // An SVG with only a viewBox decodes cleanly at 0x0: onerror never fires,
+      // and the preview would clamp to 1x1 and render blank with no explanation.
+      if (!img.naturalWidth || !img.naturalHeight) {
+        notify("That image has no dimensions to work with.");
+        return;
+      }
+
       sourceImage = img;
+      sourceStem = stemFor(file.name);
 
       const scale = Math.min(1, PREVIEW_MAX / Math.max(img.naturalWidth, img.naturalHeight));
       const pw = Math.max(1, Math.round(img.naturalWidth * scale));
@@ -958,15 +1076,19 @@
       els.dropzone.hidden = true;
       els.frame.hidden = false;
       els.stage.style.placeItems = "center";
-      [els.pinBtn, els.copyBtn, els.downloadBtn, els.newImage].forEach(function (b) {
+      [els.pinBtn, els.copyBtn, els.newImage].forEach(function (b) {
         b.disabled = false;
       });
+      // The Download button belongs to the export in flight, if there is one;
+      // re-enabling it here would invite a second concurrent render.
+      if (!exportInFlight) els.downloadBtn.disabled = false;
 
+      notify("");
       applyMode();
       syncFit();
       render();
-      URL.revokeObjectURL(url);
     };
+
     img.src = url;
   }
 
@@ -1176,36 +1298,90 @@
   });
 
   els.downloadBtn.addEventListener("click", function () {
-    if (!sourceImage) return;
+    if (!sourceImage || !previewSource || exportInFlight) return;
+
+    // Snapshot everything the export depends on. The work is deferred a frame so
+    // the button can repaint, and an image dropped inside that window would
+    // otherwise swap what gets written to disk out from under the click.
+    const source = previewSource;
+    const params = currentParams();
+    const grid = gridFor(source, params);
+    const scale = exportScale(grid);
+    const name = downloadName(params);
+    const token = ++exportToken;
+    const refocus = document.activeElement === els.downloadBtn;
+
+    exportInFlight = true;
     els.downloadBtn.textContent = "Rendering…";
     els.downloadBtn.disabled = true;
+    // Clear the previous attempt's message so a stale failure cannot read as
+    // this one's result.
+    if (noticeTimer) { clearTimeout(noticeTimer); noticeTimer = null; }
+    notify("");
+
+    // Only the newest export may write to the button, and the transient label is
+    // cleared through one tracked timer — an untracked one from a failed export
+    // would re-enable the button in the middle of the next render.
+    function finish(message) {
+      if (token !== exportToken) return;
+      exportInFlight = false;
+      els.downloadBtn.textContent = "Download";
+      els.downloadBtn.disabled = false;
+      if (noticeTimer) clearTimeout(noticeTimer);
+      if (message) {
+        notify(message);
+        if (refocus) els.downloadBtn.focus();
+        noticeTimer = setTimeout(function () {
+          noticeTimer = null;
+          notify("");
+        }, 6000);
+      }
+    }
 
     setTimeout(function () {
-      const full = document.createElement("canvas");
-      full.width = sourceImage.naturalWidth;
-      full.height = sourceImage.naturalHeight;
-      full.getContext("2d").drawImage(sourceImage, 0, 0);
+      try {
+        // Dither the same canvas the preview did: identical pixels in, identical
+        // grid out, so the palette medianCut derives matches the swatches on
+        // screen. Then blow it up by a whole number of pixels per cell.
+        const result = dither(source, params, grid);
 
-      const params = currentParams();
-      const result = dither(full, params);
+        const out = document.createElement("canvas");
+        out.width = grid.w * scale;
+        out.height = grid.h * scale;
+        const octx = out.getContext("2d");
+        octx.imageSmoothingEnabled = false;
+        octx.drawImage(result.canvas, 0, 0, out.width, out.height);
 
-      const outFull = document.createElement("canvas");
-      outFull.width = full.width;
-      outFull.height = full.height;
-      const octx = outFull.getContext("2d");
-      octx.imageSmoothingEnabled = false;
-      octx.drawImage(result.canvas, 0, 0, full.width, full.height);
+        // toBlob and its callback stay inside the try: a throw out here would
+        // strand the button on "Rendering…" with no way back but a reload.
+        out.toBlob(function (blob) {
+          try {
+            // A null blob means the canvas is past the browser's size ceiling.
+            if (!blob) { finish("Export is too large for this browser."); return; }
+            if (token !== exportToken) return;
 
-      outFull.toBlob(function (blob) {
-        const a = document.createElement("a");
-        a.href = URL.createObjectURL(blob);
-        a.download = "dither-p" + params.colors + "-c" + params.cell +
-          "-s" + params.strength.toFixed(2) + ".png";
-        a.click();
-        URL.revokeObjectURL(a.href);
-        els.downloadBtn.textContent = "Download full size";
-        els.downloadBtn.disabled = false;
-      }, "image/png");
+            // One export's blob at a time. Revoking in the same tick as click()
+            // can cancel the download before the browser has read it, so the
+            // previous one is released when the next export starts instead.
+            if (lastExportUrl) URL.revokeObjectURL(lastExportUrl);
+            lastExportUrl = URL.createObjectURL(blob);
+
+            const a = document.createElement("a");
+            a.href = lastExportUrl;
+            a.download = name;
+            a.click();
+            finish(null);
+          } catch (err) {
+            console.error("Dither Lab: export failed while encoding", err);
+            finish("Export failed. See the console for details.");
+          }
+        }, "image/png");
+      } catch (err) {
+        // Several distinct causes land here — canvas allocation refused, OOM,
+        // a degenerate source. The label cannot say which; the console can.
+        console.error("Dither Lab: export failed while rendering", err);
+        finish("Export failed. See the console for details.");
+      }
     }, 30);
   });
 
@@ -1234,7 +1410,9 @@
   });
 
   els.stage.addEventListener("drop", function (e) {
-    if (e.dataTransfer && e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
+    // Hand the empty case to loadFile too — it owns the message for a drop that
+    // carried no file.
+    loadFile(e.dataTransfer && e.dataTransfer.files[0]);
   });
 
   if (window.ResizeObserver) {
