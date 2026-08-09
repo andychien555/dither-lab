@@ -16,6 +16,9 @@ generation prompt you want to match.
 - **8×8 Bayer ordered dither**, with adjustable cell size and spread.
 - **Optional vertical streaks** — pixel-sorting artifacts, off by default.
 - **Three presets**: Light, House, Poster. House is the reference target.
+- **Fits the window.** Tall portraits scale down to the visible stage instead of
+  running below the fold, and the readout says when the view is no longer 1:1 —
+  so a scaled preview never quietly misleads the density call.
 - **Split compare** against the original, draggable.
 - **Pin versions** to compare candidates side by side, then download at full
   source resolution.

@@ -342,6 +342,12 @@
     image-rendering: pixelated;
   }
 
+  /* A tall image would otherwise run past the bottom of the stage and have to be
+     scrolled to be judged. --fit-h is the stage's own usable height, measured in
+     script; with width and height both auto the canvas keeps its aspect ratio
+     and settles inside whichever limit binds first. */
+  #outCanvas { max-height: var(--fit-h, none); }
+
   #origCanvas {
     position: absolute;
     inset: 0;
@@ -673,6 +679,7 @@
   let sourceImage = null;      // full-resolution HTMLImageElement
   let previewSource = null;    // downscaled canvas used for live render
   let lastPalette = [];
+  let lastGrid = null;         // dither grid size of the current render
   let mode = "result";
   let splitPct = 50;
   let pins = [];
@@ -856,8 +863,52 @@
 
     drawSwatches(result.palette);
     els.recipe.textContent = recipeText(params);
-    els.readout.textContent = sourceImage.naturalWidth + " × " +
-      sourceImage.naturalHeight + "  ·  grid " + result.width + " × " + result.height;
+    lastGrid = { w: result.width, h: result.height };
+    updateReadout();
+  }
+
+  function updateReadout() {
+    if (!sourceImage || !lastGrid) return;
+    let text = sourceImage.naturalWidth + " × " + sourceImage.naturalHeight +
+      "  ·  grid " + lastGrid.w + " × " + lastGrid.h;
+    // Once the canvas is scaled to fit, one dither pixel is no longer one screen
+    // pixel — say so, or the view quietly misleads the density call.
+    const shown = els.out.getBoundingClientRect().width;
+    if (shown > 0 && els.out.width > 0) {
+      const pct = Math.round((shown / els.out.width) * 100);
+      if (pct < 99) text += "  ·  viewing at " + pct + "%";
+    }
+    els.readout.textContent = text;
+  }
+
+  // The cap has to come from the viewport, not from the stage's own layout box:
+  // a tall control panel can stretch the grid row past the window, and a canvas
+  // that fits the row would still sit below the fold.
+  function syncFit() {
+    const cs = getComputedStyle(els.stage);
+    const padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+    let room;
+
+    if (window.matchMedia("(max-width: 860px)").matches) {
+      // Stacked layout: the stage starts below a full-height panel, so there is
+      // no first-screen room to measure. Size it so the image fills most of the
+      // window once scrolled to.
+      room = Math.round(window.innerHeight * 0.7);
+    } else {
+      // Document-space top, so the result does not drift with scroll position.
+      const top = els.stage.getBoundingClientRect().top + window.scrollY;
+      room = window.innerHeight - top - els.pins.offsetHeight;
+    }
+
+    room = Math.max(240, Math.round(room));
+    els.stage.style.maxHeight = room + "px";
+
+    // The cap lands on the canvas, but the frame's border sits outside it —
+    // leave room for it or the stage scrolls by exactly that much.
+    const fcs = getComputedStyle(els.frame);
+    const frameY = parseFloat(fcs.borderTopWidth) + parseFloat(fcs.borderBottomWidth);
+    els.stage.style.setProperty("--fit-h", (room - padY - frameY) + "px");
+    updateReadout();
   }
 
   function queueRender() {
@@ -912,6 +963,7 @@
       });
 
       applyMode();
+      syncFit();
       render();
       URL.revokeObjectURL(url);
     };
@@ -1185,8 +1237,19 @@
     if (e.dataTransfer && e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
   });
 
+  if (window.ResizeObserver) {
+    // The pin strip grows on first pin and the masthead rewraps at narrow
+    // widths; both move the stage's share of the window.
+    const fitObserver = new ResizeObserver(syncFit);
+    [els.stage, els.pins, document.querySelector("header")].forEach(function (el) {
+      if (el) fitObserver.observe(el);
+    });
+  }
+  window.addEventListener("resize", syncFit);
+
   syncLabels();
   refreshPins();
+  syncFit();
 })();
 </script>
 
